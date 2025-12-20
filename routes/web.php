@@ -8,6 +8,7 @@ use App\Http\Controllers\AdminController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\GoogleAuthController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\CallController;
 
 Route::get('/', function () {
     return view('welcome');
@@ -71,4 +72,9 @@ Route::middleware(['auth', '2fa'])->prefix('chat')->group(function () {
     Route::get('/messages/{user}', [ChatController::class, 'getMessages'])->name('chat.messages');
     Route::post('/send', [ChatController::class, 'sendMessage'])->name('chat.send');
     Route::get('/unread', [ChatController::class, 'unreadCount'])->name('chat.unread');
+});
+
+// Call Routes
+Route::middleware(['auth', '2fa'])->prefix('call')->group(function () {
+    Route::post('/signal', [CallController::class, 'signal'])->name('call.signal');
 });
