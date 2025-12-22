@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Events\MessageSent;
+use App\Events\MessageRead;
 use App\Models\Message;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -30,10 +31,19 @@ class ChatController extends Controller
         ->orderBy('created_at', 'asc')
         ->get();
 
-        Message::where('sender_id', $user->id)
+        // Mark messages as read and broadcast
+        $unreadMessages = Message::where('sender_id', $user->id)
                ->where('receiver_id', Auth::id())
                ->where('is_read', false)
-               ->update(['is_read' => true]);
+               ->get();
+        
+        if ($unreadMessages->count() > 0) {
+            $messageIds = $unreadMessages->pluck('id')->toArray();
+            Message::whereIn('id', $messageIds)->update(['is_read' => true]);
+            
+            // Broadcast read receipt to sender
+            broadcast(new MessageRead($messageIds, Auth::id(), $user->id));
+        }
 
         return response()->json([
             'messages' => $messages->map(function ($msg) {
@@ -45,6 +55,7 @@ class ChatController extends Controller
                     'sender_id' => $msg->sender_id,
                     'sender_name' => $msg->sender->name,
                     'is_mine' => $msg->sender_id === Auth::id(),
+                    'is_read' => $msg->is_read,
                     'created_at' => $msg->created_at->timezone('Asia/Kolkata')->format('h:i A'),
                 ];
             }),
@@ -87,6 +98,7 @@ class ChatController extends Controller
             'message' => $request->message ?? '',
             'attachment' => $attachmentPath,
             'attachment_type' => $attachmentType,
+            'is_read' => false,
         ]);
 
         broadcast(new MessageSent($message, Auth::user()))->toOthers();
@@ -99,9 +111,28 @@ class ChatController extends Controller
                 'attachment' => $attachmentPath ? asset('storage/' . $attachmentPath) : null,
                 'attachment_type' => $attachmentType,
                 'sender_id' => $message->sender_id,
+                'is_read' => false,
                 'created_at' => $message->created_at->timezone('Asia/Kolkata')->format('h:i A'),
             ]
         ]);
+    }
+
+    public function markAsRead(Request $request)
+    {
+        $request->validate([
+            'message_ids' => 'required|array',
+            'message_ids.*' => 'exists:messages,id',
+            'sender_id' => 'required|exists:users,id',
+        ]);
+
+        Message::whereIn('id', $request->message_ids)
+               ->where('receiver_id', Auth::id())
+               ->update(['is_read' => true]);
+
+        // Broadcast read receipt to sender
+        broadcast(new MessageRead($request->message_ids, Auth::id(), $request->sender_id));
+
+        return response()->json(['success' => true]);
     }
 
     public function unreadCount()

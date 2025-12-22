@@ -71,6 +71,7 @@ Route::middleware(['auth', '2fa'])->prefix('chat')->group(function () {
     Route::get('/', [ChatController::class, 'index'])->name('chat.index');
     Route::get('/messages/{user}', [ChatController::class, 'getMessages'])->name('chat.messages');
     Route::post('/send', [ChatController::class, 'sendMessage'])->name('chat.send');
+    Route::post('/mark-read', [ChatController::class, 'markAsRead'])->name('chat.mark-read');
     Route::get('/unread', [ChatController::class, 'unreadCount'])->name('chat.unread');
 });
 
