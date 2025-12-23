@@ -42,7 +42,7 @@ and admin-level access control.
 ![Home Page](3.png)
 
 ### Admin Panel
-![Admin Panel](2.png)
+![Admin Panel](2fa.png)
 
 ### User Panel 
 ![User Panel](1.png)
