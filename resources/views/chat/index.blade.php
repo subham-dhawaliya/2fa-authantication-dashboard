@@ -344,9 +344,24 @@ const iceServers = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' }
-    ]
+        // Free TURN servers for better connectivity
+        { 
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        { 
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        { 
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ],
+    iceCandidatePoolSize: 10
 };
 
 let pendingIceCandidates = [];
@@ -420,13 +435,17 @@ function createPeerConnection(targetUserId) {
     
     peerConnection.onicecandidate = (event) => {
         if (event.candidate && callActive) {
-            console.log('Got ICE candidate, sending...');
+            // Send ICE candidate immediately
             sendIceCandidate(event.candidate, targetUserId);
         }
     };
+
+    peerConnection.onicegatheringstatechange = () => {
+        console.log('ICE gathering state:', peerConnection.iceGatheringState);
+    };
     
     peerConnection.ontrack = (event) => {
-        console.log('Received remote track:', event.track.kind, 'streams:', event.streams.length);
+        console.log('Received remote track:', event.track.kind);
         const stream = event.streams[0];
         if (currentCallType === 'video') {
             document.getElementById('remote-video').srcObject = stream;
@@ -445,22 +464,25 @@ function createPeerConnection(targetUserId) {
         const state = peerConnection.iceConnectionState;
         if (state === 'connected' || state === 'completed') {
             document.getElementById('call-status').textContent = 'Connected';
+        } else if (state === 'checking') {
+            document.getElementById('call-status').textContent = 'Connecting...';
         } else if (state === 'failed') {
             document.getElementById('call-status').textContent = 'Connection failed';
             setTimeout(cleanupCall, 2000);
         } else if (state === 'disconnected') {
-            document.getElementById('call-status').textContent = 'Disconnected';
+            document.getElementById('call-status').textContent = 'Reconnecting...';
+            // Try to reconnect for 5 seconds before giving up
+            setTimeout(() => {
+                if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
+                    cleanupCall();
+                }
+            }, 5000);
         }
     };
 
     peerConnection.onconnectionstatechange = () => {
         if (!peerConnection) return;
         console.log('Connection state:', peerConnection.connectionState);
-    };
-    
-    peerConnection.onsignalingstatechange = () => {
-        if (!peerConnection) return;
-        console.log('Signaling state:', peerConnection.signalingState);
     };
 }
 
@@ -488,6 +510,7 @@ function handleCallSignal(data) {
             peerConnection.setRemoteDescription(sdp).then(() => {
                 console.log('Remote description set (answer)');
                 remoteDescriptionSet = true;
+                document.getElementById('call-status').textContent = 'Connected';
                 processPendingIceCandidates();
             }).catch(e => console.error('Error setting remote description:', e));
         } catch (e) {
@@ -495,21 +518,21 @@ function handleCallSignal(data) {
         }
     } else if (data.type === 'ice-candidate') {
         if (peerConnection && remoteDescriptionSet) {
-            console.log('Adding ICE candidate');
             const iceCandidate = new RTCIceCandidate(data.data);
             peerConnection.addIceCandidate(iceCandidate).catch(e => console.error('Error adding ICE candidate:', e));
         } else {
-            console.log('Buffering ICE candidate');
             pendingIceCandidates.push(data.data);
         }
     } else if (data.type === 'end-call') {
         console.log('Call ended by remote');
         cleanupCall();
+    } else if (data.type === 'connected') {
+        // Both sides connected
+        document.getElementById('call-status').textContent = 'Connected';
     }
 }
 
 function processPendingIceCandidates() {
-    console.log('Processing', pendingIceCandidates.length, 'pending ICE candidates');
     pendingIceCandidates.forEach(candidate => {
         if (peerConnection && candidate) {
             const iceCandidate = new RTCIceCandidate(candidate);
@@ -566,7 +589,12 @@ async function acceptCall() {
         
         // Encode answer SDP
         sendSignalTo(window.callerId, 'answer', { type: answer.type, sdp: encodeSdp(answer.sdp) });
-        document.getElementById('call-status').textContent = 'Connecting...';
+        document.getElementById('call-status').textContent = 'Connected';
+        
+        // Notify caller that we're connected
+        setTimeout(() => {
+            sendSignalTo(window.callerId, 'connected', null);
+        }, 500);
         
     } catch (err) {
         console.error('Error accepting call:', err);
