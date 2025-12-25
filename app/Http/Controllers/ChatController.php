@@ -14,7 +14,39 @@ class ChatController extends Controller
 {
     public function index()
     {
-        $users = User::where('id', '!=', Auth::id())->get();
+        $currentUserId = Auth::id();
+        
+        $users = User::where('id', '!=', $currentUserId)
+            ->get()
+            ->map(function ($user) use ($currentUserId) {
+                // Get last message between current user and this user
+                $lastMessage = Message::where(function ($query) use ($currentUserId, $user) {
+                    $query->where('sender_id', $currentUserId)
+                          ->where('receiver_id', $user->id);
+                })->orWhere(function ($query) use ($currentUserId, $user) {
+                    $query->where('sender_id', $user->id)
+                          ->where('receiver_id', $currentUserId);
+                })
+                ->orderBy('created_at', 'desc')
+                ->first();
+                
+                // Get unread count from this user
+                $unreadCount = Message::where('sender_id', $user->id)
+                    ->where('receiver_id', $currentUserId)
+                    ->where('is_read', false)
+                    ->count();
+                
+                $user->last_message = $lastMessage ? ($lastMessage->attachment ? '📷 Photo' : $lastMessage->message) : null;
+                $user->last_message_time = $lastMessage ? $lastMessage->created_at->timezone('Asia/Kolkata')->format('h:i A') : null;
+                $user->last_message_is_mine = $lastMessage ? ($lastMessage->sender_id === $currentUserId) : false;
+                $user->unread_count = $unreadCount;
+                $user->last_message_at = $lastMessage ? $lastMessage->created_at : null;
+                
+                return $user;
+            })
+            ->sortByDesc('last_message_at')
+            ->values();
+        
         return view('chat.index', compact('users'));
     }
 

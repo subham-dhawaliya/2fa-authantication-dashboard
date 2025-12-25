@@ -25,8 +25,13 @@
         .user-avatar { width: 45px; height: 45px; border-radius: 50%; background: linear-gradient(135deg, #5046e5, #7c3aed); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 16px; overflow: hidden; flex-shrink: 0; }
         .user-avatar img { width: 100%; height: 100%; object-fit: cover; }
         .user-info { flex: 1; min-width: 0; }
-        .user-info h4 { font-size: 14px; font-weight: 600; color: #1f2937; margin-bottom: 2px; }
-        .user-info p { font-size: 12px; color: #6b7280; }
+        .user-info-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+        .user-info h4 { font-size: 14px; font-weight: 600; color: #1f2937; margin: 0; }
+        .user-info .msg-time { font-size: 11px; color: #9ca3af; }
+        .user-info-bottom { display: flex; justify-content: space-between; align-items: center; }
+        .user-info .last-msg { font-size: 12px; color: #6b7280; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+        .user-info .you-prefix { color: #9ca3af; }
+        .unread-badge { background: #5046e5; color: white; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 10px; min-width: 18px; text-align: center; }
         .chat-area { flex: 1; display: flex; flex-direction: column; background: #f8f9fa; }
         .chat-header { background: #fff; padding: 12px 20px; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; justify-content: space-between; }
         .chat-header-left { display: flex; align-items: center; gap: 12px; }
@@ -86,6 +91,8 @@
         .call-action-btn.end { background: #ef4444; color: white; }
         .call-action-btn.mute { background: #374151; color: white; }
         .call-action-btn.mute.muted { background: #f59e0b; color: white; }
+        .call-action-btn.cam-off { background: #374151; color: white; }
+        .call-action-btn.cam-off.off { background: #ef4444; color: white; }
         .call-action-btn.switch-cam { background: #2563eb; color: white; }
         .call-action-btn:hover { transform: scale(1.1); }
         #video-container { display: none; width: 100%; max-width: 800px; position: relative; }
@@ -113,7 +120,25 @@
                         @elseif($user->avatar)<img src="{{ $user->avatar }}" alt="{{ $user->name }}">
                         @else {{ strtoupper(substr($user->name, 0, 1)) }} @endif
                     </div>
-                    <div class="user-info"><h4>{{ $user->name }}</h4><p>Click to chat</p></div>
+                    <div class="user-info">
+                        <div class="user-info-top">
+                            <h4>{{ $user->name }}</h4>
+                            @if($user->last_message_time)<span class="msg-time">{{ $user->last_message_time }}</span>@endif
+                        </div>
+                        <div class="user-info-bottom">
+                            <p class="last-msg" id="last-msg-{{ $user->id }}">
+                                @if($user->last_message)
+                                    @if($user->last_message_is_mine)<span class="you-prefix">You: </span>@endif
+                                    {{ Str::limit($user->last_message, 25) }}
+                                @else
+                                    Click to chat
+                                @endif
+                            </p>
+                            @if($user->unread_count > 0)
+                            <span class="unread-badge" id="unread-{{ $user->id }}">{{ $user->unread_count }}</span>
+                            @endif
+                        </div>
+                    </div>
                 </div>
                 @endforeach
             </div>
@@ -129,15 +154,19 @@
             <div class="call-status" id="call-status">Calling...</div>
         </div>
         <div id="video-container">
-            <video id="remote-video" autoplay playsinline></video>
+            <video id="remote-video" autoplay playine></video>
             <video id="local-video" autoplay playsinline muted></video>
             <div class="video-call-controls" id="video-call-controls" style="display:none;">
                 <button class="call-action-btn mute" id="mute-btn" onclick="toggleMute()"><i class="fas fa-microphone"></i></button>
+                <button class="call-action-btn cam-off" id="cam-off-btn" onclick="toggleCamera()"><i class="fas fa-video"></i></button>
                 <button class="call-action-btn switch-cam" id="switch-cam-btn" onclick="switchCamera()"><i class="fas fa-sync-alt"></i></button>
                 <button class="call-action-btn end" onclick="endCall()"><i class="fas fa-phone-slash"></i></button>
             </div>
         </div>
         <audio id="remote-audio" autoplay></audio>
+        <!-- iPhone Ringtones -->
+        <audio id="ringtone" preload="auto"></audio>
+        <audio id="outgoing-tone" preload="auto"></audio>
         <div class="call-actions" id="call-actions">
             <button class="call-action-btn accept" onclick="acceptCall()"><i class="fas fa-phone"></i></button>
             <button class="call-action-btn reject" onclick="rejectCall()"><i class="fas fa-phone-slash"></i></button>
@@ -153,7 +182,7 @@
 const currentUserId = {{ auth()->id() }};
 let selectedUserId = null, selectedUserName = '', selectedUserAvatar = '', selectedFile = null;
 let pusher, chatChannel, callChannel, peerConnection = null, localStream = null;
-let currentCallType = 'audio', isCallIncoming = false, callActive = false, isMuted = false;
+let currentCallType = 'audio', isCallIncoming = false, callActive = false, isMuted = false, isCameraOff = false;
 let currentFacingMode = 'user'; // 'user' for front camera, 'environment' for back camera
 const emojis = ['😀','😂','😍','🥰','😎','🤔','😢','😡','👍','👎','❤️','🔥','🎉','👏','🙏','💪','✨','🌟','💯','🤝','👋','🎁','🌈','☀️','🌙','⭐','💬','📷','🎵','🎮'];
 
@@ -165,7 +194,16 @@ pusher = new Pusher('0e82200317882bf6c2c8', {
 
 chatChannel = pusher.subscribe('private-chat.' + currentUserId);
 chatChannel.bind('App\\Events\\MessageSent', function(data) {
-    if (selectedUserId === data.sender_id) { appendMessage(data, false); scrollToBottom(); }
+    // Update sidebar with new message
+    updateSidebarMessage(data.sender_id, data.message, data.attachment, false);
+    
+    if (selectedUserId === data.sender_id) { 
+        appendMessage(data, false); 
+        scrollToBottom(); 
+    } else {
+        // Increment unread count if not viewing this chat
+        incrementUnreadCount(data.sender_id);
+    }
 });
 chatChannel.bind('App\\Events\\MessageRead', function(data) {
     // Update ticks for read messages
@@ -182,6 +220,10 @@ function selectUser(userId) {
     selectedUserAvatar = userItem.dataset.userAvatar;
     document.querySelectorAll('.user-item').forEach(item => item.classList.remove('active'));
     userItem.classList.add('active');
+    
+    // Clear unread badge when selecting user
+    const unreadBadge = document.getElementById('unread-' + userId);
+    if (unreadBadge) unreadBadge.remove();
     loadMessages(userId);
 }
 
@@ -245,6 +287,8 @@ function sendMessage() {
     formData.append('receiver_id', selectedUserId);
     if (message) formData.append('message', message);
     if (selectedFile) formData.append('attachment', selectedFile);
+    const sentMessage = message;
+    const sentAttachment = selectedFile ? true : false;
     input.value = ''; removePreview();
     fetch('/chat/send', { method: 'POST', headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content }, body: formData })
     .then(res => res.json()).then(data => {
@@ -258,7 +302,9 @@ function sendMessage() {
                 is_mine: true,
                 is_read: false 
             }, true); 
-            scrollToBottom(); 
+            scrollToBottom();
+            // Update sidebar with sent message
+            updateSidebarMessage(selectedUserId, data.message.message, data.message.attachment, true);
         }
     });
 }
@@ -319,6 +365,42 @@ function updateMessageTicks(messageIds) {
     });
 }
 
+function updateSidebarMessage(userId, message, attachment, isMine) {
+    const lastMsgEl = document.getElementById('last-msg-' + userId);
+    if (lastMsgEl) {
+        let msgText = attachment ? '📷 Photo' : (message || '');
+        if (msgText.length > 25) msgText = msgText.substring(0, 25) + '...';
+        const prefix = isMine ? '<span class="you-prefix">You: </span>' : '';
+        lastMsgEl.innerHTML = prefix + escapeHtml(msgText);
+    }
+    
+    // Move user to top of list
+    const userItem = document.querySelector(`[data-user-id="${userId}"]`);
+    const usersList = document.querySelector('.users-list');
+    if (userItem && usersList) {
+        usersList.insertBefore(userItem, usersList.firstChild);
+    }
+}
+
+function incrementUnreadCount(userId) {
+    let unreadBadge = document.getElementById('unread-' + userId);
+    const userItem = document.querySelector(`[data-user-id="${userId}"]`);
+    
+    if (unreadBadge) {
+        const count = parseInt(unreadBadge.textContent) + 1;
+        unreadBadge.textContent = count;
+    } else if (userItem) {
+        const userInfoBottom = userItem.querySelector('.user-info-bottom');
+        if (userInfoBottom) {
+            unreadBadge = document.createElement('span');
+            unreadBadge.className = 'unread-badge';
+            unreadBadge.id = 'unread-' + userId;
+            unreadBadge.textContent = '1';
+            userInfoBottom.appendChild(unreadBadge);
+        }
+    }
+}
+
 function toggleEmojiPicker() { document.getElementById('emoji-picker').classList.toggle('show'); }
 function insertEmoji(emoji) { document.getElementById('message-input').value += emoji; document.getElementById('message-input').focus(); document.getElementById('emoji-picker').classList.remove('show'); }
 function handleFileSelect(event) {
@@ -344,6 +426,9 @@ const iceServers = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
         // Free TURN servers for better connectivity
         { 
             urls: 'turn:openrelay.metered.ca:80',
@@ -361,11 +446,57 @@ const iceServers = {
             credential: 'openrelayproject'
         }
     ],
-    iceCandidatePoolSize: 10
+    iceCandidatePoolSize: 10,
+    // 🔥 NEW: Aggressive ICE gathering
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
+    iceTransportPolicy: 'all'
 };
 
 let pendingIceCandidates = [];
 let remoteDescriptionSet = false;
+let isWaitingForAnswer = false; // NEW: Track if caller is waiting for answer
+let toneMonitorInterval = null; // NEW: Monitor and force stop tones
+let callState = 'idle'; // NEW: Track exact call state - 'idle', 'ringing', 'accepted', 'connecting', 'connected'
+
+// 🔥 NEW: Aggressive tone monitoring - checks every 100ms and stops if call is connected
+function startToneMonitoring() {
+    if (toneMonitorInterval) return;
+    
+    console.log('👁️ Starting tone monitoring...');
+    toneMonitorInterval = setInterval(() => {
+        // If peer connection exists and is in connected state, force stop tones
+        if (peerConnection) {
+            const iceState = peerConnection.iceConnectionState;
+            const connState = peerConnection.connectionState;
+            
+            if (iceState === 'connected' || iceState === 'completed' || 
+                connState === 'connected') {
+                if (ringtoneAudio || outgoingAudio) {
+                    console.log('🚨 TONE MONITOR: Force stopping tones - connection active!');
+                    stopAllTones();
+                }
+            }
+        }
+        
+        // Also stop if call is not active anymore
+        if (!callActive) {
+            if (ringtoneAudio || outgoingAudio) {
+                console.log('🚨 TONE MONITOR: Force stopping tones - call inactive!');
+                stopAllTones();
+            }
+            stopToneMonitoring();
+        }
+    }, 100); // Check every 100ms
+}
+
+function stopToneMonitoring() {
+    if (toneMonitorInterval) {
+        console.log('👁️ Stopping tone monitoring');
+        clearInterval(toneMonitorInterval);
+        toneMonitorInterval = null;
+    }
+}
 
 // Base64 encode/decode for SDP to prevent corruption
 function encodeSdp(sdp) {
@@ -392,14 +523,35 @@ async function startCall(type) {
     callActive = true;
     remoteDescriptionSet = false;
     pendingIceCandidates = [];
+    isWaitingForAnswer = true;
+    callState = 'ringing'; // 🔥 Set state to ringing
     
-    showCallModal(selectedUserName, selectedUserAvatar, 'Calling...');
+    // 🔥 Start aggressive tone monitoring
+    startToneMonitoring();
+    
+    // 🔥 Show "Ringing..." immediately for caller
+    showCallModal(selectedUserName, selectedUserAvatar, 'Ringing...', false);
     document.getElementById('call-actions').style.display = 'none';
     document.getElementById('ongoing-call-actions').style.display = 'flex';
     
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: type === 'video' });
-        console.log('Got local stream for call');
+        // 🔥 Optimized media constraints for faster connection
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: type === 'video' ? {
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 },
+                frameRate: { ideal: 30, max: 30 },
+                facingMode: 'user'
+            } : false
+        };
+        
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('✅ Got local stream for', type, 'call');
         
         if (type === 'video') {
             document.getElementById('local-video').srcObject = localStream;
@@ -409,21 +561,39 @@ async function startCall(type) {
             document.getElementById('ongoing-call-actions').style.display = 'none';
         }
         
+        // 🔥 Create peer connection FIRST
         createPeerConnection(selectedUserId);
+        
+        // 🔥 Add tracks immediately
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
-            console.log('Added local track:', track.kind);
+            console.log('✅ Added local track:', track.kind);
         });
         
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        console.log('Created and set local offer');
+        // 🔥 Create offer with optimized settings
+        const offerOptions = {
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: type === 'video',
+            iceRestart: false
+        };
         
-        // Encode SDP to prevent corruption during transmission
+        console.log('📤 Creating offer...');
+        const offer = await peerConnection.createOffer(offerOptions);
+        await peerConnection.setLocalDescription(offer);
+        console.log('✅ Offer created and set as local description');
+        
+        // 🔥 Send offer immediately (don't wait for ICE gathering to complete)
+        console.log('🚀 Sending offer to receiver...');
         sendSignal('offer', { type: offer.type, sdp: encodeSdp(offer.sdp) }, type);
+        
+        // 🔥 Keep showing "Ringing..." until receiver responds
+        console.log('📞 Call state: RINGING');
+        
     } catch (err) {
-        console.error('Error starting call:', err);
+        console.error('❌ Error starting call:', err);
         callActive = false;
+        callState = 'idle';
+        stopToneMonitoring();
         hideCallModal();
         alert('Could not access camera/microphone. Please allow permission.');
     }
@@ -431,44 +601,118 @@ async function startCall(type) {
 
 function createPeerConnection(targetUserId) {
     peerConnection = new RTCPeerConnection(iceServers);
-    console.log('Created new RTCPeerConnection');
+    console.log('🔗 Created new RTCPeerConnection');
     
+    // 🔥 Optimized ICE candidate handling - send immediately
     peerConnection.onicecandidate = (event) => {
-        if (event.candidate && callActive) {
-            // Send ICE candidate immediately
+        if (event.candidate) {
+            console.log('🧊 New ICE candidate:', event.candidate.type);
+            // Send immediately without delay
             sendIceCandidate(event.candidate, targetUserId);
+        } else {
+            console.log('✅ ICE gathering complete');
         }
     };
 
     peerConnection.onicegatheringstatechange = () => {
-        console.log('ICE gathering state:', peerConnection.iceGatheringState);
+        console.log('🧊 ICE gathering state:', peerConnection.iceGatheringState);
+        
+        // 🔥 Stop tones when ICE gathering completes
+        if (peerConnection.iceGatheringState === 'complete') {
+            console.log('✅ ICE gathering finished');
+        }
     };
     
     peerConnection.ontrack = (event) => {
-        console.log('Received remote track:', event.track.kind);
+        console.log('🎯 RECEIVED REMOTE TRACK:', event.track.kind);
+        
+        // 🔥 CRITICAL: Stop all tones immediately when track received
+        stopAllTones();
+        
         const stream = event.streams[0];
+        
+        // Always set audio to remote-audio element for voice
+        const audioEl = document.getElementById('remote-audio');
+        audioEl.srcObject = stream;
+        audioEl.volume = 1.0;
+        
+        // 🔥 Force play immediately with error handling
+        const playAudio = () => {
+            audioEl.play()
+                .then(() => console.log('✅ Remote audio playing'))
+                .catch(e => {
+                    console.log('⚠️ Audio play blocked, retrying...', e);
+                    // Retry after short delay
+                    setTimeout(playAudio, 100);
+                });
+        };
+        playAudio();
+        
+        // For video calls, also set video element
         if (currentCallType === 'video') {
-            document.getElementById('remote-video').srcObject = stream;
+            const videoEl = document.getElementById('remote-video');
+            videoEl.srcObject = stream;
+            
+            // 🔥 Force play immediately with aggressive retry
+            const playVideo = () => {
+                videoEl.play()
+                    .then(() => {
+                        console.log('✅ Remote video playing');
+                        stopAllTones(); // Stop tones when video plays
+                    })
+                    .catch(e => {
+                        console.log('⚠️ Video play blocked, retrying...', e);
+                        // Retry multiple times
+                        setTimeout(playVideo, 50);
+                    });
+            };
+            playVideo();
+            
+            // 🔥 Ensure video UI shows immediately
             showVideoCallUI();
-        } else {
-            const audioEl = document.getElementById('remote-audio');
-            audioEl.srcObject = stream;
-            audioEl.play().then(() => console.log('Audio playing')).catch(e => console.log('Audio play error:', e));
         }
+        
         document.getElementById('call-status').textContent = 'Connected';
+        
+        // 🔥 Force stop tones after short delay as backup
+        setTimeout(() => stopAllTones(), 50);
+        setTimeout(() => stopAllTones(), 100);
+        setTimeout(() => stopAllTones(), 200);
     };
 
     peerConnection.oniceconnectionstatechange = () => {
         if (!peerConnection) return;
-        console.log('ICE connection state:', peerConnection.iceConnectionState);
+        console.log('🔌 ICE connection state:', peerConnection.iceConnectionState, '| Call state:', callState);
         const state = peerConnection.iceConnectionState;
+        
         if (state === 'connected' || state === 'completed') {
+            console.log('✅ ICE CONNECTED - STOPPING ALL TONES');
+            stopAllTones(); // Stop immediately on connection
+            callState = 'connected'; // 🔥 Update state
             document.getElementById('call-status').textContent = 'Connected';
+            
+            // 🔥 Aggressive backup stop
+            setTimeout(() => stopAllTones(), 50);
+            setTimeout(() => stopAllTones(), 150);
+            setTimeout(() => stopAllTones(), 300);
+            
         } else if (state === 'checking') {
-            document.getElementById('call-status').textContent = 'Connecting...';
+            console.log('🔍 ICE checking... Current call state:', callState);
+            // 🔥 CRITICAL: Only show "Connecting..." if call was ACCEPTED
+            // Keep "Ringing..." if still in ringing state
+            if (callState === 'accepted' || callState === 'connecting') {
+                document.getElementById('call-status').textContent = 'Connecting...';
+            } else if (callState === 'ringing') {
+                // Don't change status - keep showing "Ringing..."
+                console.log('⏳ Keeping Ringing... status (call not accepted yet)');
+            }
+            
         } else if (state === 'failed') {
             document.getElementById('call-status').textContent = 'Connection failed';
+            callState = 'idle';
+            stopAllTones();
             setTimeout(cleanupCall, 2000);
+            
         } else if (state === 'disconnected') {
             document.getElementById('call-status').textContent = 'Reconnecting...';
             // Try to reconnect for 5 seconds before giving up
@@ -482,173 +726,502 @@ function createPeerConnection(targetUserId) {
 
     peerConnection.onconnectionstatechange = () => {
         if (!peerConnection) return;
-        console.log('Connection state:', peerConnection.connectionState);
+        console.log('📡 Connection state:', peerConnection.connectionState, '| Call state:', callState);
+        
+        const state = peerConnection.connectionState;
+        if (state === 'connected') {
+            console.log('✅ PEER CONNECTION ESTABLISHED - FORCE STOP ALL TONES');
+            stopAllTones();
+            callState = 'connected'; // 🔥 Update state
+            document.getElementById('call-status').textContent = 'Connected';
+            
+            // 🔥 Multiple aggressive stops
+            for (let i = 0; i < 5; i++) {
+                setTimeout(() => stopAllTones(), i * 100);
+            }
+            
+        } else if (state === 'connecting') {
+            console.log('🔄 Peer connection establishing... Call state:', callState);
+            // 🔥 CRITICAL: Only show "Connecting..." if call was ACCEPTED
+            if (callState === 'accepted' || callState === 'connecting') {
+                document.getElementById('call-status').textContent = 'Connecting...';
+            } else if (callState === 'ringing') {
+                // Don't change status - keep showing "Ringing..."
+                console.log('⏳ Keeping Ringing... status (call not accepted yet)');
+            }
+            
+        } else if (state === 'failed' || state === 'closed') {
+            console.log('❌ Peer connection failed or closed');
+            callState = 'idle';
+            stopAllTones();
+        }
     };
 }
 
+/************************************************
+ * CALL SIGNAL HANDLER (CALLER + RECEIVER)
+ ************************************************/
 function handleCallSignal(data) {
-    console.log('Received signal:', data.type);
-    
+    console.log('📨 Received signal:', data.type, 'from:', data.caller_id || data.receiver_id);
+
+    /* =========================
+       INCOMING CALL (RECEIVER)
+    ========================= */
     if (data.type === 'offer') {
+        console.log('📞 INCOMING OFFER');
         isCallIncoming = true;
         callActive = true;
         remoteDescriptionSet = false;
         pendingIceCandidates = [];
         currentCallType = data.call_type || 'audio';
-        showCallModal(data.caller_name, data.caller_avatar, `Incoming ${currentCallType} call...`);
+        callState = 'ringing'; // 🔥 Set state to ringing for receiver
+        
+        // 🔥 Start tone monitoring for receiver too
+        startToneMonitoring();
+
+        showCallModal(
+            data.caller_name,
+            data.caller_avatar,
+            `Incoming ${currentCallType} call...`,
+            true
+        );
+
         document.getElementById('call-actions').style.display = 'flex';
         document.getElementById('ongoing-call-actions').style.display = 'none';
-        // Store offer with encoded SDP
+
         window.incomingOffer = data.data;
         window.callerId = data.caller_id;
-    } else if (data.type === 'answer' && peerConnection) {
-        console.log('Received answer, setting remote description');
+        
+        // 🔥 NEW: Send immediate acknowledgment to caller that offer was received and ringing
+        console.log('🔔 Sending ringing acknowledgment to caller');
+        sendSignalTo(data.caller_id, 'ringing', null);
+    }
+    
+    /* =========================
+       🔔 RINGING ACKNOWLEDGMENT (CALLER)
+    ========================= */
+    else if (data.type === 'ringing') {
+        console.log('🔔 RECEIVER IS RINGING - Update status');
+        document.getElementById('call-status').textContent = 'Ringing...';
+        // Keep playing outgoing tone
+    }
+
+    /* =========================
+       🔥 CALL ACCEPTED (CALLER) - INSTANT FEEDBACK
+    ========================= */
+    else if (data.type === 'call-accepted') {
+        console.log('✅ CALL ACCEPTED BY RECEIVER - STOP RINGTONE IMMEDIATELY');
+        
+        // 🔥 Update call state - call is now accepted
+        callState = 'accepted';
+        isWaitingForAnswer = false;
+        
+        // 🔥 SUPER AGGRESSIVE STOP
+        stopAllTones();
+        stopAllTones(); // Call twice
+        
+        // Multiple delayed stops as backup
+        setTimeout(() => stopAllTones(), 10);
+        setTimeout(() => stopAllTones(), 50);
+        setTimeout(() => stopAllTones(), 100);
+        setTimeout(() => stopAllTones(), 200);
+        setTimeout(() => stopAllTones(), 500);
+        
+        // 🔥 Now show connecting status (call was accepted, now establishing connection)
+        document.getElementById('call-status').textContent = 'Connecting...';
+        console.log('📞 Call state changed: RINGING → ACCEPTED → CONNECTING');
+    }
+
+    /* =========================
+       ANSWER RECEIVED (CALLER) - FASTER PROCESSING
+    ========================= */
+    else if (data.type === 'answer' && peerConnection) {
+        console.log('📨 Received answer - Processing immediately');
+        
+        // 🔥 Stop tones immediately when answer received
+        stopAllTones();
+        setTimeout(() => stopAllTones(), 50);
+        setTimeout(() => stopAllTones(), 150);
+
         try {
-            // Decode the SDP
             const decodedSdp = decodeSdp(data.data.sdp);
-            const sdp = new RTCSessionDescription({ type: data.data.type, sdp: decodedSdp });
+            const sdp = new RTCSessionDescription({
+                type: data.data.type,
+                sdp: decodedSdp
+            });
+
+            // NEW: Set remote description immediately without delay
             peerConnection.setRemoteDescription(sdp).then(() => {
-                console.log('Remote description set (answer)');
+                console.log('✅ Remote description set successfully');
                 remoteDescriptionSet = true;
-                document.getElementById('call-status').textContent = 'Connected';
+                document.getElementById('call-status').textContent = 'Establishing connection...';
+                
+                // 🔥 Stop tones again after setting description
+                stopAllTones();
+                
+                // Process any pending ICE candidates immediately
                 processPendingIceCandidates();
-            }).catch(e => console.error('Error setting remote description:', e));
+            }).catch(err => {
+                console.error('❌ Error setting remote description:', err);
+            });
         } catch (e) {
-            console.error('Error decoding answer SDP:', e);
+            console.error('❌ Answer SDP error:', e);
         }
-    } else if (data.type === 'ice-candidate') {
-        if (peerConnection && remoteDescriptionSet) {
-            const iceCandidate = new RTCIceCandidate(data.data);
-            peerConnection.addIceCandidate(iceCandidate).catch(e => console.error('Error adding ICE candidate:', e));
+    }
+
+    /* =========================
+       ICE CANDIDATE - IMPROVED HANDLING
+    ========================= */
+    else if (data.type === 'ice-candidate') {
+        console.log('🧊 Received ICE candidate');
+        
+        if (peerConnection) {
+            if (remoteDescriptionSet) {
+                // Add immediately if remote description is set
+                peerConnection.addIceCandidate(
+                    new RTCIceCandidate(data.data)
+                ).then(() => {
+                    console.log('✅ ICE candidate added successfully');
+                }).catch(err => {
+                    console.error('⚠️ Error adding ICE candidate (will retry):', err);
+                    // Retry once after short delay
+                    setTimeout(() => {
+                        if (peerConnection && remoteDescriptionSet) {
+                            peerConnection.addIceCandidate(new RTCIceCandidate(data.data))
+                                .catch(e => console.error('❌ ICE retry failed:', e));
+                        }
+                    }, 100);
+                });
+            } else {
+                // Queue for later if remote description not set yet
+                console.log('⏳ Queuing ICE candidate (remote description not set yet)');
+                pendingIceCandidates.push(data.data);
+                
+                // 🔥 Try to process after short delay in case description arrives soon
+                setTimeout(() => {
+                    if (remoteDescriptionSet && pendingIceCandidates.length > 0) {
+                        console.log('🔄 Processing queued candidates after delay');
+                        processPendingIceCandidates();
+                    }
+                }, 200);
+            }
         } else {
+            console.log('⚠️ No peer connection yet, queuing candidate');
             pendingIceCandidates.push(data.data);
         }
-    } else if (data.type === 'end-call') {
-        console.log('Call ended by remote');
+    }
+
+    /* =========================
+       END CALL
+    ========================= */
+    else if (data.type === 'end-call') {
+        console.log('📵 Call ended by remote user');
         cleanupCall();
-    } else if (data.type === 'connected') {
-        // Both sides connected
-        document.getElementById('call-status').textContent = 'Connected';
     }
 }
 
-function processPendingIceCandidates() {
-    pendingIceCandidates.forEach(candidate => {
-        if (peerConnection && candidate) {
-            const iceCandidate = new RTCIceCandidate(candidate);
-            peerConnection.addIceCandidate(iceCandidate).catch(e => console.error('Error adding buffered ICE:', e));
-        }
-    });
-    pendingIceCandidates = [];
-}
-
+/************************************************
+ * ACCEPT CALL (RECEIVER) - OPTIMIZED FOR SPEED
+ ************************************************/
 async function acceptCall() {
-    console.log('Accepting call...');
+    console.log('✅ Accepting call - INSTANT RESPONSE');
+    stopAllTones();
+    
+    // 🔥 Update call state
+    callState = 'accepted';
+
+    // 🔥 INSTANT SIGNAL TO CALLER - Send BEFORE doing anything else
+    console.log('🚀 Sending instant accept signal to caller');
+    sendSignalTo(window.callerId, 'call-accepted', null);
+
     document.getElementById('call-actions').style.display = 'none';
     document.getElementById('ongoing-call-actions').style.display = 'flex';
     document.getElementById('call-status').textContent = 'Connecting...';
-    
+
     try {
-        if (!window.incomingOffer || !window.incomingOffer.sdp) {
-            throw new Error('No offer received');
-        }
+        console.log('🎤 Getting user media...');
         
-        console.log('Getting user media...');
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: currentCallType === 'video' });
-        console.log('Got local stream');
+        // 🔥 Optimized media constraints for faster connection
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: currentCallType === 'video' ? {
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 },
+                frameRate: { ideal: 30, max: 30 },
+                facingMode: 'user'
+            } : false
+        };
         
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('✅ Got local stream');
+
         if (currentCallType === 'video') {
-            document.getElementById('local-video').srcObject = localStream;
+            const localVideo = document.getElementById('local-video');
+            localVideo.srcObject = localStream;
+            // 🔥 Ensure video plays immediately
+            localVideo.play().catch(e => console.log('Local video play error:', e));
             showVideoCallUI();
         }
-        
+
+        console.log('🔗 Creating peer connection...');
         createPeerConnection(window.callerId);
-        
+
+        console.log('➕ Adding local tracks to peer connection...');
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
-            console.log('Added local track:', track.kind);
+            console.log('✅ Added track:', track.kind);
         });
-        
-        console.log('Setting remote description (offer)...');
-        // Decode the SDP from base64
+
+        console.log('📨 Setting remote description (offer)...');
         const decodedSdp = decodeSdp(window.incomingOffer.sdp);
-        const offerSdp = new RTCSessionDescription({ 
-            type: window.incomingOffer.type || 'offer', 
-            sdp: decodedSdp 
-        });
-        await peerConnection.setRemoteDescription(offerSdp);
-        console.log('Remote description set');
+        await peerConnection.setRemoteDescription(
+            new RTCSessionDescription({
+                type: 'offer',
+                sdp: decodedSdp
+            })
+        );
+        console.log('✅ Remote description set');
+
         remoteDescriptionSet = true;
+        callState = 'connecting'; // 🔥 Update state
         
+        // Process any ICE candidates that arrived early
+        console.log('🧊 Processing pending ICE candidates...');
         processPendingIceCandidates();
+
+        console.log('📤 Creating answer...');
         
-        console.log('Creating answer...');
-        const answer = await peerConnection.createAnswer();
+        // 🔥 Optimized answer options
+        const answerOptions = {
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: currentCallType === 'video'
+        };
+        
+        const answer = await peerConnection.createAnswer(answerOptions);
         await peerConnection.setLocalDescription(answer);
-        console.log('Local description set, sending answer...');
-        
-        // Encode answer SDP
-        sendSignalTo(window.callerId, 'answer', { type: answer.type, sdp: encodeSdp(answer.sdp) });
-        document.getElementById('call-status').textContent = 'Connected';
-        
-        // Notify caller that we're connected
-        setTimeout(() => {
-            sendSignalTo(window.callerId, 'connected', null);
-        }, 500);
-        
+        console.log('✅ Answer created and set as local description');
+
+        console.log('🚀 Sending answer to caller...');
+        sendSignalTo(window.callerId, 'answer', {
+            type: answer.type,
+            sdp: encodeSdp(answer.sdp)
+        });
+
+        console.log('✅ Call setup complete - waiting for connection!');
+
     } catch (err) {
-        console.error('Error accepting call:', err);
-        document.getElementById('call-status').textContent = 'Error: ' + err.message;
-        setTimeout(cleanupCall, 3000);
+        console.error('❌ Error accepting call:', err);
+        callState = 'idle';
+        cleanupCall();
+        alert('Could not access camera/microphone. Please check permissions.');
     }
 }
 
+/************************************************
+ * CALL CONTROL
+ ************************************************/
 function rejectCall() {
+    console.log('❌ Rejecting call');
     sendSignalTo(window.callerId, 'end-call', null);
     cleanupCall();
 }
 
 function endCall() {
+    console.log('📵 Ending call');
     const receiverId = isCallIncoming ? window.callerId : selectedUserId;
     if (receiverId) sendSignalTo(receiverId, 'end-call', null);
     cleanupCall();
 }
 
 function cleanupCall() {
-    console.log('Cleaning up call...');
+    console.log('🧹 Cleaning up call...');
+    stopAllTones();
+    stopToneMonitoring(); // 🔥 Stop monitoring
+
     callActive = false;
     remoteDescriptionSet = false;
     pendingIceCandidates = [];
-    if (peerConnection) { 
-        peerConnection.close(); 
-        peerConnection = null; 
+    isWaitingForAnswer = false;
+    callState = 'idle'; // 🔥 Reset state
+
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+        console.log('✅ Peer connection closed');
     }
-    if (localStream) { 
-        localStream.getTracks().forEach(track => track.stop()); 
-        localStream = null; 
+
+    if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+        console.log('✅ Local stream stopped');
     }
+
     hideCallModal();
 }
 
-function showCallModal(name, avatar, status) {
+/************************************************
+ * RINGTONE SYSTEM (FIXED)
+ ************************************************/
+const IPHONE_RINGTONE = '/sounds/iphone.mp3';
+const OUTGOING_TONE = '/sounds/vip.mp3';
+
+let ringtoneAudio = null;
+let outgoingAudio = null;
+
+function playRingtone() {
+    if (ringtoneAudio && !ringtoneAudio.paused) {
+        console.log('🔔 Ringtone already playing');
+        return;
+    }
+
+    stopAllTones();
+    console.log('🔔 Playing ringtone...');
+    ringtoneAudio = new Audio(IPHONE_RINGTONE);
+    ringtoneAudio.loop = true;
+    ringtoneAudio.volume = 1.0;
+    ringtoneAudio.play().catch(e => console.warn('⚠️ Ringtone play error:', e));
+}
+
+function playOutgoingTone() {
+    if (outgoingAudio && !outgoingAudio.paused) {
+        console.log('📞 Outgoing tone already playing');
+        return;
+    }
+
+    stopAllTones();
+    console.log('📞 Playing outgoing tone...');
+    outgoingAudio = new Audio(OUTGOING_TONE);
+    outgoingAudio.loop = true;
+    outgoingAudio.volume = 1.0;
+    outgoingAudio.play().catch(e => console.warn('⚠️ Outgoing tone play error:', e));
+}
+
+function stopAllTones() {
+    let stopped = false;
+    
+    if (ringtoneAudio) {
+        console.log('🔕 Stopping ringtone');
+        try {
+            ringtoneAudio.pause();
+            ringtoneAudio.currentTime = 0;
+            ringtoneAudio.src = ''; // Clear source
+            ringtoneAudio.load(); // Reset audio element
+            ringtoneAudio = null;
+            stopped = true;
+        } catch (e) {
+            console.error('Error stopping ringtone:', e);
+        }
+    }
+    
+    if (outgoingAudio) {
+        console.log('🔕 Stopping outgoing tone');
+        try {
+            outgoingAudio.pause();
+            outgoingAudio.currentTime = 0;
+            outgoingAudio.src = ''; // Clear source
+            outgoingAudio.load(); // Reset audio element
+            outgoingAudio = null;
+            stopped = true;
+        } catch (e) {
+            console.error('Error stopping outgoing tone:', e);
+        }
+    }
+    
+    if (stopped) {
+        console.log('✅ All tones stopped successfully');
+    }
+    
+    // 🔥 Extra aggressive: Stop all audio elements on page
+    document.querySelectorAll('audio').forEach(audio => {
+        if (audio.id === 'ringtone' || audio.id === 'outgoing-tone') {
+            try {
+                audio.pause();
+                audio.currentTime = 0;
+                audio.src = '';
+            } catch (e) {
+                // Ignore errors
+            }
+        }
+    });
+}
+
+/************************************************
+ * UI
+ ************************************************/
+function showCallModal(name, avatar, status, isIncoming = false) {
+    console.log('📱 Showing call modal:', { name, status, isIncoming });
     document.getElementById('caller-name').textContent = name || 'Unknown';
     document.getElementById('call-status').textContent = status;
-    document.getElementById('caller-avatar').innerHTML = avatar ? `<img src="${avatar}">` : (name ? name.charAt(0).toUpperCase() : '?');
+    document.getElementById('caller-avatar').innerHTML =
+        avatar ? `<img src="${avatar}">` : name?.charAt(0) || '?';
+
     document.getElementById('call-modal').classList.add('show');
-    document.getElementById('caller-info').classList.remove('hidden');
-    document.getElementById('video-call-controls').style.display = 'none';
-    isMuted = false;
-    updateMuteButtons();
+
+    if (isIncoming) {
+        playRingtone();
+    } else {
+        playOutgoingTone();
+    }
+}
+
+/************************************************
+ * ICE BUFFER - IMPROVED
+ ************************************************/
+function processPendingIceCandidates() {
+    if (pendingIceCandidates.length === 0) {
+        console.log('ℹ️ No pending ICE candidates to process');
+        return;
+    }
+    
+    console.log(`🧊 Processing ${pendingIceCandidates.length} pending ICE candidates...`);
+    let successCount = 0;
+    let errorCount = 0;
+    
+    pendingIceCandidates.forEach((candidateData, index) => {
+        peerConnection.addIceCandidate(new RTCIceCandidate(candidateData))
+            .then(() => {
+                successCount++;
+                console.log(`✅ Added pending ICE candidate ${index + 1}/${pendingIceCandidates.length}`);
+            })
+            .catch(err => {
+                errorCount++;
+                console.error(`❌ Error adding pending ICE candidate ${index + 1}:`, err);
+            });
+    });
+    
+    pendingIceCandidates = [];
+    console.log(`🧊 ICE processing complete: ${successCount} success, ${errorCount} errors`);
 }
 
 function showVideoCallUI() {
-    document.getElementById('caller-info').classList.add('hidden');
-    document.getElementById('video-container').classList.add('show');
-    document.getElementById('video-call-controls').style.display = 'flex';
-    document.getElementById('ongoing-call-actions').style.display = 'none';
+    console.log('📹 Showing video call UI - IMMEDIATE');
+    
+    // 🔥 Immediate UI updates
+    const callerInfo = document.getElementById('caller-info');
+    const videoContainer = document.getElementById('video-container');
+    const videoControls = document.getElementById('video-call-controls');
+    const ongoingActions = document.getElementById('ongoing-call-actions');
+    
+    callerInfo.classList.add('hidden');
+    videoContainer.classList.add('show');
+    videoControls.style.display = 'flex';
+    ongoingActions.style.display = 'none';
+    
+    // 🔥 Force stop all tones
+    stopAllTones();
+    
+    // 🔥 Aggressive backup stops
+    setTimeout(() => stopAllTones(), 10);
+    setTimeout(() => stopAllTones(), 50);
+    setTimeout(() => stopAllTones(), 100);
 }
 
 function hideCallModal() {
+    console.log('📴 Hiding call modal');
     document.getElementById('call-modal').classList.remove('show');
     document.getElementById('video-container').classList.remove('show');
     document.getElementById('caller-info').classList.remove('hidden');
@@ -657,13 +1230,24 @@ function hideCallModal() {
     document.getElementById('local-video').srcObject = null;
     document.getElementById('remote-audio').srcObject = null;
     isMuted = false;
+    isCameraOff = false;
+    stopAllTones();
 }
 
 function toggleMute() {
     if (!localStream) return;
     isMuted = !isMuted;
     localStream.getAudioTracks().forEach(track => track.enabled = !isMuted);
+    console.log(isMuted ? '🔇 Muted' : '🔊 Unmuted');
     updateMuteButtons();
+}
+
+function toggleCamera() {
+    if (!localStream || currentCallType !== 'video') return;
+    isCameraOff = !isCameraOff;
+    localStream.getVideoTracks().forEach(track => track.enabled = !isCameraOff);
+    console.log(isCameraOff ? '📷 Camera off' : '📹 Camera on');
+    updateCameraButton();
 }
 
 function updateMuteButtons() {
@@ -680,10 +1264,19 @@ function updateMuteButtons() {
     }
 }
 
+function updateCameraButton() {
+    const camBtn = document.getElementById('cam-off-btn');
+    if (camBtn) {
+        camBtn.innerHTML = isCameraOff ? '<i class="fas fa-video-slash"></i>' : '<i class="fas fa-video"></i>';
+        camBtn.classList.toggle('off', isCameraOff);
+    }
+}
+
 async function switchCamera() {
     if (!localStream || currentCallType !== 'video') return;
     
     try {
+        console.log('🔄 Switching camera...');
         // Toggle facing mode
         currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
         
@@ -718,18 +1311,20 @@ async function switchCamera() {
         // Update local video preview
         document.getElementById('local-video').srcObject = localStream;
         
-        console.log('Camera switched to:', currentFacingMode);
+        console.log('✅ Camera switched to:', currentFacingMode);
     } catch (err) {
-        console.error('Error switching camera:', err);
+        console.error('❌ Error switching camera:', err);
         // Revert facing mode if failed
         currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
     }
 }
 
-function sendSignal(type, data, callType) { sendSignalTo(selectedUserId, type, data, callType); }
+function sendSignal(type, data, callType) { 
+    sendSignalTo(selectedUserId, type, data, callType); 
+}
 
 function sendSignalTo(receiverId, type, data, callType) {
-    console.log('Sending signal:', type, 'to:', receiverId);
+    console.log('🚀 Sending signal:', type, 'to:', receiverId);
     const payload = JSON.stringify({ 
         receiver_id: receiverId, 
         type: type, 
@@ -740,20 +1335,41 @@ function sendSignalTo(receiverId, type, data, callType) {
     // Use sendBeacon for end-call signal (faster, works even on page close)
     if (type === 'end-call') {
         const blob = new Blob([payload], { type: 'application/json' });
-        navigator.sendBeacon('/call/signal?_token=' + document.querySelector('meta[name="csrf-token"]').content, blob);
+        const sent = navigator.sendBeacon('/call/signal?_token=' + document.querySelector('meta[name="csrf-token"]').content, blob);
+        console.log('📡 End-call signal sent via beacon:', sent);
         return;
     }
     
-    fetch('/call/signal', {
+    // NEW: Use high priority for call-accepted signal
+    const fetchOptions = {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+        headers: { 
+            'Content-Type': 'application/json', 
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content 
+        },
         body: payload
-    }).then(res => res.json()).then(data => console.log('Signal sent:', data)).catch(e => console.error('Signal error:', e));
+    };
+    
+    // Add priority for critical signals
+    if (type === 'call-accepted' || type === 'answer') {
+        fetchOptions.priority = 'high';
+        console.log('⚡ Sending high-priority signal:', type);
+    }
+    
+    fetch('/call/signal', fetchOptions)
+        .then(res => res.json())
+        .then(data => {
+            console.log('✅ Signal sent successfully:', type, data);
+        })
+        .catch(e => {
+            console.error('❌ Signal error:', e);
+        });
 }
 
 // Handle page close/refresh - end call properly
 window.addEventListener('beforeunload', function() {
     if (callActive) {
+        console.log('⚠️ Page closing - ending call');
         const receiverId = isCallIncoming ? window.callerId : selectedUserId;
         if (receiverId) {
             const payload = JSON.stringify({ 
